@@ -339,10 +339,10 @@ app.put('/api/admin/members/:username', verifyToken, async (req, res) => {
 });
 
 //Schedule
-pp.get('/api/admin/schedules', verifyToken, async (req, res) => {
+app.get('/api/admin/schedules', verifyToken, async (req, res) => {
   if (req.user.role !== 'Admin') return res.status(403).json({ message: 'ไม่มีสิทธิ์เข้าถึง' });
 
-  const { date, driver, bus, route, time } = req.query; // รับค่า Filter
+  const { date, driver, bus, route, time } = req.query; 
   let connection;
 
   try {
@@ -386,7 +386,6 @@ app.post('/api/admin/schedules', verifyToken, async (req, res) => {
 
   try {
     connection = await getDBConnection();
-    // สมมติรับ Time เป็น String Format 'YYYY-MM-DD HH24:MI:SS'
     const sql = `INSERT INTO "Schedule" ("Sch_code", "Time", "driver", "route_code", "bus") VALUES (:Sch_code, TO_DATE(:Time, 'YYYY-MM-DD HH24:MI:SS'), :driver, :route_code, :bus)`;
     await connection.execute(sql, { Sch_code, Time, driver, route_code, bus }, { autoCommit: true });
     res.json({ success: true, message: 'เพิ่มรอบรถสำเร็จ' });
@@ -458,12 +457,154 @@ app.get('/api/admin/tickets', verifyToken, async (req, res) => {
   }
 });
 
-//Report1
-//Report2
-//Report3
-//Report4
-//Report5
-//Report6
-//Report7
+app.get('/api/admin/reports/:report_id', verifyToken, async (req, res) => {
+  if (req.user.role !== 'Admin') return res.status(403).json({ message: 'ไม่มีสิทธิ์เข้าถึงรายงาน' });
+
+  const { report_id } = req.params;
+  const { date_start, date_end, station, route, sort_by = '1', order = 'ASC' } = req.query;
+  
+  let connection;
+
+  try {
+    connection = await getDBConnection();
+    let baseSql = '';
+    let groupBy = '';
+    const binds = {};
+
+    switch (report_id) {
+      case '1': 
+        // Report 1: เปรียบเทียบจำนวนคนขึ้นลง
+        baseSql = `
+          SELECT TO_CHAR(s."Time", 'YYYY-MM') AS "Period",
+                 COUNT(CASE WHEN t."tick_status" IN ('Check-in', 'Booked') THEN 1 END) AS "Total_Boarding",
+                 COUNT(CASE WHEN t."tick_status" = 'Completed' THEN 1 END) AS "Total_Alighting"
+          FROM "Ticket" t
+          JOIN "Schedule" s ON t."sch_code" = s."Sch_code"
+          WHERE 1=1
+        `;
+        groupBy = ` GROUP BY TO_CHAR(s."Time", 'YYYY-MM')`;
+        break;
+
+      case '2': 
+        // Report 2: สถิติการจอง
+        baseSql = `
+          SELECT TO_CHAR(s."Time", 'YYYY') AS "Year",
+                 COUNT(t."Ticket_id") AS "Total_Bookings",
+                 COUNT(CASE WHEN t."tick_status" = 'Cancelled' THEN 1 END) AS "Cancelled",
+                 COUNT(CASE WHEN t."tick_status" = 'Check-in' THEN 1 END) AS "Check_in",
+                 COUNT(CASE WHEN t."tick_status" = 'No Show' THEN 1 END) AS "No_Show"
+          FROM "Ticket" t
+          JOIN "Schedule" s ON t."sch_code" = s."Sch_code"
+          WHERE 1=1
+        `;
+        groupBy = ` GROUP BY TO_CHAR(s."Time", 'YYYY')`;
+        break;
+
+      case '3': 
+        // Report 3: พฤติกรรมผู้ใช้
+        baseSql = `
+          SELECT t."U_Name",
+                 COUNT(t."Ticket_id") AS "Total_Bookings",
+                 COUNT(CASE WHEN t."tick_status" = 'Check-in' THEN 1 END) AS "Actual_Boarded",
+                 COUNT(CASE WHEN t."tick_status" = 'Cancelled' THEN 1 END) AS "Cancelled",
+                 COUNT(CASE WHEN t."tick_status" = 'No Show' THEN 1 END) AS "No_Show"
+          FROM "Ticket" t
+          JOIN "Schedule" s ON t."sch_code" = s."Sch_code"
+          WHERE 1=1
+        `;
+        groupBy = ` GROUP BY t."U_Name"`;
+        break;
+
+      case '4': 
+        // Report 4: สรุปยอดผู้ใช้แต่ละเส้นทาง
+        baseSql = `
+          SELECT r."route_name",
+                 TO_CHAR(s."Time", 'YYYY-MM-DD') AS "Travel_Date",
+                 COUNT(t."Ticket_id") AS "Total_Passengers"
+          FROM "Ticket" t
+          JOIN "Schedule" s ON t."sch_code" = s."Sch_code"
+          JOIN "Route" r ON s."route_code" = r."route_code"
+          WHERE 1=1
+        `;
+        groupBy = ` GROUP BY r."route_name", TO_CHAR(s."Time", 'YYYY-MM-DD')`;
+        break;
+
+      case '5': 
+        // Report 5: การใช้บริการแต่ละจุดจอดตามรอบเวลา
+        baseSql = `
+          SELECT st."St_name" AS "Station_Name",
+                 TO_CHAR(s."Time", 'HH24:MI') AS "Time_Round",
+                 COUNT(CASE WHEN t."br_station" = st."St_code" THEN 1 END) AS "Boarding_Count",
+                 COUNT(CASE WHEN t."de_station" = st."St_code" THEN 1 END) AS "Alighting_Count"
+          FROM "Station" st
+          LEFT JOIN "Ticket" t ON (t."br_station" = st."St_code" OR t."de_station" = st."St_code")
+          LEFT JOIN "Schedule" s ON t."sch_code" = s."Sch_code"
+          WHERE 1=1
+        `;
+        groupBy = ` GROUP BY st."St_name", TO_CHAR(s."Time", 'HH24:MI')`;
+        break;
+
+      case '6': 
+        // Report 6: สรุปการมอบหมายงานให้คนขับ
+        baseSql = `
+          SELECT s."driver" AS "Driver_Name",
+                 COUNT(CASE WHEN TO_NUMBER(TO_CHAR(s."Time", 'HH24')) < 17 THEN 1 END) AS "Before_17_00",
+                 COUNT(CASE WHEN TO_NUMBER(TO_CHAR(s."Time", 'HH24')) >= 17 THEN 1 END) AS "After_17_00",
+                 COUNT(s."Sch_code") AS "Total_Rounds"
+          FROM "Schedule" s
+          WHERE 1=1
+        `;
+        groupBy = ` GROUP BY s."driver"`;
+        break;
+
+      case '7': 
+        // Report 7: จำนวนการมอบหมายงานให้รถแต่ละคัน
+        baseSql = `
+          SELECT b."Bus_name",
+                 COUNT(s."Sch_code") AS "Total_Rounds"
+          FROM "Schedule" s
+          JOIN "Bus" b ON s."bus" = b."Bus_code"
+          WHERE 1=1
+        `;
+        groupBy = ` GROUP BY b."Bus_name"`;
+        break;
+
+      default:
+        return res.status(400).json({ message: 'ไม่พบหมายเลข Report ที่ระบุ' });
+    }
+
+    //Filter
+    if (date_start && date_end) {
+      baseSql += ` AND TRUNC(s."Time") BETWEEN TO_DATE(:date_start, 'YYYY-MM-DD') AND TO_DATE(:date_end, 'YYYY-MM-DD')`;
+      binds.date_start = date_start;
+      binds.date_end = date_end;
+    }
+    if (station && (report_id === '5')) {
+      baseSql += ` AND st."St_code" = :station`;
+      binds.station = station;
+    }
+    if (route && (report_id === '4')) {
+      baseSql += ` AND r."route_code" = :route`;
+      binds.route = route;
+    }
+
+    const finalSql = baseSql + groupBy + ` ORDER BY ${sort_by} ${order === 'DESC' ? 'DESC' : 'ASC'}`;
+
+    const result = await connection.execute(finalSql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    
+    res.json({ 
+      success: true, 
+      report_no: report_id,
+      total_rows: result.rows.length,
+      data: result.rows 
+    });
+
+  } catch (error) {
+    console.error(`Report ${report_id} Error:`, error);
+    res.status(500).json({ message: 'เกิดข้อผิดพลาดในการดึงข้อมูลรายงาน' });
+  } finally {
+    if (connection) { try { await connection.close(); } catch (err) {} }
+  }
+});
 
 app.listen(PORT, () => console.log(` Server is running on port ${PORT}`));
