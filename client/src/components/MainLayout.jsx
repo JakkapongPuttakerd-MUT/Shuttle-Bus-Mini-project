@@ -23,6 +23,7 @@ const MainLayout = ({ children }) => {
           <Link to="/dashboard" className="nav-link">หน้าหลัก</Link>
           <Link to="/admin/employees" className="nav-link">จัดการพนักงาน</Link>
           <Link to="/admin/routes" className="nav-link">จัดเส้นทาง</Link>
+          {/* รามิสเพิ่มปุ่มนี้ให้แล้วค่ะ */}
           <Link to="/admin/tickets" className="nav-link">จัดการตั๋ว</Link>
           <Link to="/reports" className="nav-link">รายงาน</Link>
         </nav>

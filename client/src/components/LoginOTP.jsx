@@ -44,7 +44,15 @@ const LoginOTP = () => {
     e.preventDefault();
     if (otp === '123456') {
       login();
-      navigate('/dashboard');
+      
+      const userRole = localStorage.getItem('role'); 
+      if (userRole === 'Driver') {
+        navigate('/driver'); 
+      } else if (userRole === 'Member') {
+        navigate('/passenger'); // รามิสเพิ่มแยกคนธรรมดาให้แล้วค่ะ
+      } else {
+        navigate('/dashboard'); 
+      }
     } else {
       setError('รหัส OTP ไม่ถูกต้อง (ทดสอบใช้ 123456)');
     }

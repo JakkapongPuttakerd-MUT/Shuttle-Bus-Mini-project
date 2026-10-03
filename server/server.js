@@ -108,11 +108,29 @@ app.post('/api/login', async (req, res) => {
     }
   }
 });
+app.get('/api/user/profile', verifyToken, async (req, res) => {
+  let connection;
+  try {
+    connection = await getDBConnection();
+    const sql = `SELECT "Sname", "Lname" FROM "Member" WHERE "U_Name" = :username`;
+    const result = await connection.execute(sql, [req.user.username], { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    
+    if (result.rows.length > 0) {
+      res.json({ success: true, Sname: result.rows[0].Sname, Lname: result.rows[0].Lname });
+    } else {
+      res.json({ success: false, message: 'ไม่พบข้อมูลผู้ใช้' });
+    }
+  } catch (error) {
+    res.status(500).json({ message: `Oracle Error: ${error.message}` });
+  } finally {
+    if (connection) { try { await connection.close(); } catch (err) { } }
+  }
+});
 
 //======================================================================================================================================
 //                                                     Driver System
 //======================================================================================================================================
-//Schedule
+//Schedule ของคนขับ
 app.get('/api/driver/schedules', verifyToken, async (req, res) => {
   const driverUsername = req.user.username;
   let connection;
@@ -120,19 +138,22 @@ app.get('/api/driver/schedules', verifyToken, async (req, res) => {
   try {
     connection = await getDBConnection();
 
+    // รามิสใช้เฉพาะตารางหลักที่ชัวร์ว่ามีอยู่จริง 100% ค่ะ
     const sql = ` 
       SELECT 
         s."Sch_code", 
         s."Time", 
-        r."route_name",
-        (SELECT st."St_name" FROM "Route_stop" rs JOIN "Station" st ON rs."St_code" = st."St_code" WHERE rs."route_code" = s."route_code" ORDER BY rs."seq_no" ASC FETCH FIRST 1 ROWS ONLY) AS "start_station",
-        (SELECT st."St_name" FROM "Route_stop" rs JOIN "Station" st ON rs."St_code" = st."St_code" WHERE rs."route_code" = s."route_code" ORDER BY rs."seq_no" DESC FETCH FIRST 1 ROWS ONLY) AS "end_station",
-        b."Bus_plate" AS "bus_plate",
+        r."route_code" AS "route_name",
+        st1."St_name" AS "start_station",
+        st2."St_name" AS "end_station",
+        b."Bus_plate", 
         b."Seats" AS "total_seats",
-        (SELECT COUNT(*) FROM "Ticket" t WHERE t."sch_code" = s."Sch_code" AND t."tick_status" IN ('Booked', 'Check-in')) AS "booked_seats"
+        (SELECT COUNT(t."Ticket_id") FROM "Ticket" t WHERE t."sch_code" = s."Sch_code" AND t."tick_status" IN ('Booked', 'Check-in')) AS "booked_seats"
       FROM "Schedule" s
       JOIN "Route" r ON s."route_code" = r."route_code"
       JOIN "Bus" b ON s."bus" = b."Bus_code"
+      LEFT JOIN "Station" st1 ON r."br_station" = st1."St_code"
+      LEFT JOIN "Station" st2 ON r."de_station" = st2."St_code"
       WHERE s."driver" = :driver_username 
         AND TRUNC(s."Time") = TRUNC(SYSDATE)
       ORDER BY s."Time" ASC
@@ -149,8 +170,8 @@ app.get('/api/driver/schedules', verifyToken, async (req, res) => {
     res.json({ success: true, data: responseData });
 
   } catch (error) {
-    console.error('Driver Schedule Error:', error);
-    res.status(500).json({ message: 'เกิดข้อผิดพลาดในการดึงตารางเดินรถ' });
+    console.error('🚨 รามิสพบ Error Driver Schedule:', error.message);
+    res.status(500).json({ message: `Oracle Error: ${error.message}` });
   } finally {
     if (connection) {
       try { await connection.close(); } catch (err) { console.error(err); }
@@ -198,101 +219,153 @@ app.get('/api/driver/schedules/:sch_code/tickets', verifyToken, async (req, res)
     }
   }
 });
+app.put('/api/driver/schedules/:sch_code/complete', verifyToken, async (req, res) => {
+  // เช็กสิทธิ์ว่าต้องเป็นคนขับเท่านั้น
+  if (req.user.role !== 'Driver') return res.status(403).json({ message: 'เฉพาะคนขับเท่านั้น' });
 
-//======================================================================================================================================
-//                                                 Passenger System
-//======================================================================================================================================
-//Schedule
-app.get('/api/passenger/schedules', verifyToken, async (req, res) => {
-  const { station_id } = req.query;
+  const { sch_code } = req.params;
   let connection;
 
   try {
     connection = await getDBConnection();
-
-    let sql = `
-      WITH ScheduleDetails AS (
-        SELECT 
-          s."Sch_code", 
-          s."Time", 
-          r."route_name",
-          (SELECT rs."St_code" FROM "Route_stop" rs WHERE rs."route_code" = s."route_code" ORDER BY rs."seq_no" ASC FETCH FIRST 1 ROWS ONLY) AS "start_st_code",
-          (SELECT st."St_name" FROM "Route_stop" rs JOIN "Station" st ON rs."St_code" = st."St_code" WHERE rs."route_code" = s."route_code" ORDER BY rs."seq_no" ASC FETCH FIRST 1 ROWS ONLY) AS "start_station",
-          (SELECT st."St_name" FROM "Route_stop" rs JOIN "Station" st ON rs."St_code" = st."St_code" WHERE rs."route_code" = s."route_code" ORDER BY rs."seq_no" DESC FETCH FIRST 1 ROWS ONLY) AS "end_station",
-          b."Bus_plate" AS "bus_plate",
-          b."Seats" AS "total_seats",
-          (SELECT COUNT(*) FROM "Ticket" t WHERE t."sch_code" = s."Sch_code" AND t."tick_status" IN ('Booked', 'Check-in')) AS "booked_seats"
-        FROM "Schedule" s
-        JOIN "Route" r ON s."route_code" = r."route_code"
-        JOIN "Bus" b ON s."bus" = b."Bus_code"
-        WHERE s."Time" >= SYSDATE + INTERVAL '20' MINUTE
-      )
-      SELECT * FROM ScheduleDetails
+    // อัปเดตเฉพาะตั๋วที่ยัง Active (Booked หรือ Check-in) ในรอบรถนั้น ให้กลายเป็น Completed
+    const sql = `
+      UPDATE "Ticket" 
+      SET "tick_status" = 'Completed' 
+      WHERE "sch_code" = :1 AND "tick_status" IN ('Booked', 'Check-in')
     `;
+    const result = await connection.execute(sql, [sch_code], { autoCommit: true });
 
-    const binds = {};
-    if (station_id) {
-      sql += ` WHERE "start_st_code" = :station_id `;
-      binds.station_id = station_id;
-    }
-    sql += ` ORDER BY "Time" ASC`;
-
-    const result = await connection.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
-
-    const responseData = result.rows.map(row => ({
-      ...row,
-      available_seats: row.total_seats - row.booked_seats
-    }));
-
-    res.json({ success: true, data: responseData });
+    res.json({ success: true, message: 'บันทึกจบงานเรียบร้อย', updated_rows: result.rowsAffected });
   } catch (error) {
-    console.error('Passenger Schedules Error:', error);
-    res.status(500).json({ message: 'เกิดข้อผิดพลาดในการดึงตารางเดินรถ' });
+    console.error('🚨 รามิสพบ Error จบงานคนขับ:', error.message);
+    res.status(500).json({ message: `Oracle Error: ${error.message}` });
   } finally {
     if (connection) { try { await connection.close(); } catch (err) { } }
   }
 });
 
-//Ticket
-app.post('/api/passenger/book', verifyToken, async (req, res) => {
+//======================================================================================================================================
+//                                                 Passenger System
+//======================================================================================================================================
+// 1. ดึงตารางเดินรถของวันนี้ (แสดงให้ผู้โดยสารเห็น)
+app.get('/api/member/schedules', verifyToken, async (req, res) => {
+  let connection;
+  try {
+    connection = await getDBConnection();
+    const sql = `
+      SELECT 
+        s."Sch_code", s."Time", r."route_code",
+        st1."St_name" AS "start_station",
+        st2."St_name" AS "end_station",
+        b."Bus_plate", b."Seats" AS "total_seats",
+        (SELECT COUNT(t."Ticket_id") FROM "Ticket" t WHERE t."sch_code" = s."Sch_code" AND t."tick_status" IN ('Booked', 'Check-in')) AS "booked_seats"
+      FROM "Schedule" s
+      JOIN "Route" r ON s."route_code" = r."route_code"
+      JOIN "Bus" b ON s."bus" = b."Bus_code"
+      LEFT JOIN "Station" st1 ON r."br_station" = st1."St_code"
+      LEFT JOIN "Station" st2 ON r."de_station" = st2."St_code"
+      WHERE TRUNC(s."Time") = TRUNC(SYSDATE)
+      ORDER BY s."Time" ASC
+    `;
+    const result = await connection.execute(sql, [], { outFormat: oracledb.OUT_FORMAT_OBJECT });
+
+    // คำนวณที่นั่งว่างส่งไปให้หน้าบ้าน
+    const responseData = result.rows.map(row => ({
+      ...row,
+      available_seats: row.total_seats - row.booked_seats
+    }));
+    res.json({ success: true, data: responseData });
+  } catch (error) {
+    res.status(500).json({ message: `Oracle Error: ${error.message}` });
+  } finally {
+    if (connection) { try { await connection.close(); } catch (err) { } }
+  }
+});
+
+// 2. กดจองตั๋ว
+app.post('/api/member/tickets', verifyToken, async (req, res) => {
+  const { sch_code } = req.body;
   const username = req.user.username;
-  const { sch_code, br_station, de_station } = req.body;
   let connection;
 
   try {
     connection = await getDBConnection();
+    // สร้าง Ticket ID แบบอัตโนมัติด้วยตัวเลขเวลา
+    const ticketId = Date.now().toString().slice(-8);
+    const randomSeat = Math.floor(Math.random() * 40) + 1; // สุ่มที่นั่งชั่วคราว
 
-    const idResult = await connection.execute(`SELECT NVL(MAX("Ticket_id"), 1000) + 1 AS "new_id" FROM "Ticket"`);
-    const newTicketId = idResult.rows[0][0];
-
-    const seatResult = await connection.execute(`SELECT COUNT(*) + 1 AS "next_seat" FROM "Ticket" WHERE "sch_code" = :1`, [sch_code]);
-    const nextSeat = seatResult.rows[0][0];
-
-    const insertSql = `
+    // รามิสเพิ่มคอลัมน์ expire_time เข้าไป โดยดึงเวลา Time จากตาราง Schedule มาใส่ให้เลยค่ะ
+    const sql = `
       INSERT INTO "Ticket" (
-        "Ticket_id", "sch_code", "tick_status", "U_Name", "seat_no", 
-        "br_station", "de_station", "booking_time", "expire_time"
-      ) 
+        "Ticket_id", "U_Name", "sch_code", "br_station", "de_station", 
+        "tick_status", "booking_time", "seat_no", "expire_time"
+      )
       VALUES (
-        :ticket_id, :sch_code, 'Booked', :username, :seat_no, 
-        :br_station, :de_station, SYSDATE, 
-        (SELECT "Time" FROM "Schedule" WHERE "Sch_code" = :sch_code)
+        :ticket_id, :username, :sch_code,
+        (SELECT r."br_station" FROM "Route" r JOIN "Schedule" s ON r."route_code" = s."route_code" WHERE s."Sch_code" = :sch_code),
+        (SELECT r."de_station" FROM "Route" r JOIN "Schedule" s ON r."route_code" = s."route_code" WHERE s."Sch_code" = :sch_code),
+        'Booked', SYSDATE, :seat_no,
+        (SELECT s."Time" FROM "Schedule" s WHERE s."Sch_code" = :sch_code)
       )
     `;
-
-    await connection.execute(insertSql, {
-      ticket_id: newTicketId,
-      sch_code: sch_code,
-      username: username,
-      seat_no: nextSeat,
-      br_station: br_station,
-      de_station: de_station
+    await connection.execute(sql, {
+      ticket_id: ticketId,
+      username,
+      sch_code,
+      seat_no: randomSeat.toString()
     }, { autoCommit: true });
 
-    res.json({ success: true, message: 'จองตั๋วสำเร็จ', ticket_id: newTicketId, seat_no: nextSeat });
+    res.json({ success: true, message: 'จองตั๋วสำเร็จ!' });
   } catch (error) {
-    console.error('Booking Error:', error);
-    res.status(500).json({ message: 'เกิดข้อผิดพลาดในการจองตั๋ว' });
+    res.status(500).json({ message: `Oracle Error: ${error.message}` });
+  } finally {
+    if (connection) { try { await connection.close(); } catch (err) { } }
+  }
+});
+
+// 3. ดูตั๋วทั้งหมดของตัวเอง
+app.get('/api/member/my-tickets', verifyToken, async (req, res) => {
+  const username = req.user.username;
+  let connection;
+  try {
+    connection = await getDBConnection();
+    const sql = `
+      SELECT 
+        t."Ticket_id", t."tick_status", t."booking_time", t."seat_no",
+        s."Time" AS "schedule_time",
+        b."Bus_plate",
+        st1."St_name" AS "boarding_station",
+        st2."St_name" AS "destination_station"
+      FROM "Ticket" t
+      JOIN "Schedule" s ON t."sch_code" = s."Sch_code"
+      JOIN "Bus" b ON s."bus" = b."Bus_code"
+      JOIN "Station" st1 ON t."br_station" = st1."St_code"
+      JOIN "Station" st2 ON t."de_station" = st2."St_code"
+      WHERE t."U_Name" = :username
+      ORDER BY s."Time" DESC
+    `;
+    const result = await connection.execute(sql, [username], { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    res.json({ success: true, data: result.rows });
+  } catch (error) {
+    res.status(500).json({ message: `Oracle Error: ${error.message}` });
+  } finally {
+    if (connection) { try { await connection.close(); } catch (err) { } }
+  }
+});
+
+// 4. กดยกเลิกตั๋ว
+app.put('/api/member/tickets/:ticket_id/cancel', verifyToken, async (req, res) => {
+  const { ticket_id } = req.params;
+  const username = req.user.username;
+  let connection;
+  try {
+    connection = await getDBConnection();
+    const sql = `UPDATE "Ticket" SET "tick_status" = 'Cancelled' WHERE "Ticket_id" = :ticket_id AND "U_Name" = :username`;
+    await connection.execute(sql, { ticket_id, username }, { autoCommit: true });
+    res.json({ success: true, message: 'ยกเลิกตั๋วสำเร็จ' });
+  } catch (error) {
+    res.status(500).json({ message: `Oracle Error: ${error.message}` });
   } finally {
     if (connection) { try { await connection.close(); } catch (err) { } }
   }
@@ -416,15 +489,15 @@ app.get('/api/admin/buses', verifyToken, async (req, res) => {
     connection = await getDBConnection();
     // รามิสใส่ฟันหนูกลับคืนให้ตารางและคอลัมน์ เพื่อล็อกตัวพิมพ์ให้ตรงฐานข้อมูลเป๊ะๆ ค่ะ
     const result = await connection.execute(
-      `SELECT "Bus_code", "Bus_plate", "Seats" FROM "Bus"`, 
+      `SELECT "Bus_code", "Bus_plate", "Seats" FROM "Bus"`,
       [], { outFormat: oracledb.OUT_FORMAT_OBJECT }
     );
     res.json({ success: true, data: result.rows });
-  } catch (err) { 
+  } catch (err) {
     console.error("🚨 Bus Error:", err.message);
-    res.status(500).json({ success: false, message: err.message }); 
-  } finally { 
-    if (connection) await connection.close(); 
+    res.status(500).json({ success: false, message: err.message });
+  } finally {
+    if (connection) await connection.close();
   }
 });
 
@@ -584,12 +657,13 @@ app.get('/api/admin/dashboard-stats', async (req, res) => {
     }
   }
 });
+
 //report
 app.get('/api/admin/reports/:report_id', verifyToken, async (req, res) => {
   if (req.user.role !== 'Admin') return res.status(403).json({ message: 'ไม่มีสิทธิ์เข้าถึงรายงาน' });
 
   const { report_id } = req.params;
-  const { date_start, date_end, station, route, sort_by = '1', order = 'ASC' } = req.query;
+  const { date_start, date_end, sort_by = '1', order = 'ASC' } = req.query;
 
   let connection;
 
@@ -601,26 +675,25 @@ app.get('/api/admin/reports/:report_id', verifyToken, async (req, res) => {
 
     switch (report_id) {
       case '1':
-        // Report 1: เปรียบเทียบจำนวนคนขึ้นลง
+        // รีพอร์ต 1: ยอดผู้โดยสารแต่ละสถานี เทียบตามเดือน
         baseSql = `
-          SELECT TO_CHAR(s."Time", 'YYYY-MM') AS "Period",
-                 COUNT(CASE WHEN t."tick_status" IN ('Check-in', 'Booked') THEN 1 END) AS "Total_Boarding",
-                 COUNT(CASE WHEN t."tick_status" = 'Completed' THEN 1 END) AS "Total_Alighting"
+          SELECT TO_CHAR(s."Time", 'YYYY-MM') || ' (' || st."St_name" || ')' AS "สถานี",
+                 COUNT(t."Ticket_id") AS "ยอดผู้โดยสาร"
           FROM "Ticket" t
           JOIN "Schedule" s ON t."sch_code" = s."Sch_code"
+          JOIN "Station" st ON t."br_station" = st."St_code"
           WHERE 1=1
         `;
-        groupBy = ` GROUP BY TO_CHAR(s."Time", 'YYYY-MM')`;
+        groupBy = ` GROUP BY TO_CHAR(s."Time", 'YYYY-MM'), st."St_name"`;
         break;
 
       case '2':
-        // Report 2: สถิติการจอง
+        // รีพอร์ต 2: สถานะตั๋วสรุปเป็นรายปี
         baseSql = `
-          SELECT TO_CHAR(s."Time", 'YYYY') AS "Year",
-                 COUNT(t."Ticket_id") AS "Total_Bookings",
-                 COUNT(CASE WHEN t."tick_status" = 'Cancelled' THEN 1 END) AS "Cancelled",
-                 COUNT(CASE WHEN t."tick_status" = 'Check-in' THEN 1 END) AS "Check_in",
-                 COUNT(CASE WHEN t."tick_status" = 'No Show' THEN 1 END) AS "No_Show"
+          SELECT TO_CHAR(s."Time", 'YYYY') AS "ปี",
+                 COUNT(CASE WHEN t."tick_status" IN ('Booked', 'Check-in') THEN 1 END) AS "ตั๋วที่ใช้งาน",
+                 COUNT(CASE WHEN t."tick_status" = 'Cancelled' THEN 1 END) AS "จำนวนตั๋วที่ยกเลิก",
+                 COUNT(CASE WHEN t."tick_status" = 'No Show' THEN 1 END) AS "จำนวนตั๋วที่ไม่มา"
           FROM "Ticket" t
           JOIN "Schedule" s ON t."sch_code" = s."Sch_code"
           WHERE 1=1
@@ -629,69 +702,41 @@ app.get('/api/admin/reports/:report_id', verifyToken, async (req, res) => {
         break;
 
       case '3':
-        // Report 3: พฤติกรรมผู้ใช้
+        // รีพอร์ต 3: พฤติกรรมผู้ใช้ (สถานีขึ้น-ลง และจำนวนสถานะตั๋ว)
         baseSql = `
-          SELECT t."U_Name",
-                 COUNT(t."Ticket_id") AS "Total_Bookings",
-                 COUNT(CASE WHEN t."tick_status" = 'Check-in' THEN 1 END) AS "Actual_Boarded",
-                 COUNT(CASE WHEN t."tick_status" = 'Cancelled' THEN 1 END) AS "Cancelled",
-                 COUNT(CASE WHEN t."tick_status" = 'No Show' THEN 1 END) AS "No_Show"
+          SELECT t."U_Name" || ' (' || st1."St_name" || ' ➔ ' || st2."St_name" || ')' AS "ผู้ใช้งาน",
+                 COUNT(CASE WHEN t."tick_status" IN ('Check-in', 'Completed') THEN 1 END) AS "มาขึ้นรถ",
+                 COUNT(CASE WHEN t."tick_status" = 'Cancelled' THEN 1 END) AS "ยกเลิก",
+                 COUNT(CASE WHEN t."tick_status" = 'No Show' THEN 1 END) AS "ไม่มา"
           FROM "Ticket" t
-          JOIN "Schedule" s ON t."sch_code" = s."Sch_code"
+          JOIN "Station" st1 ON t."br_station" = st1."St_code"
+          JOIN "Station" st2 ON t."de_station" = st2."St_code"
           WHERE 1=1
         `;
-        groupBy = ` GROUP BY t."U_Name"`;
+        groupBy = ` GROUP BY t."U_Name", st1."St_name", st2."St_name"`;
         break;
 
       case '4':
-        // Report 4: สรุปยอดผู้ใช้แต่ละเส้นทาง
+        // รีพอร์ต 4: งานคนขับก่อนและหลัง 17:00 น.
         baseSql = `
-          SELECT r."route_name",
-                 TO_CHAR(s."Time", 'YYYY-MM-DD') AS "Travel_Date",
-                 COUNT(t."Ticket_id") AS "Total_Passengers"
-          FROM "Ticket" t
-          JOIN "Schedule" s ON t."sch_code" = s."Sch_code"
-          JOIN "Route" r ON s."route_code" = r."route_code"
+          SELECT m."Sname" || ' ' || m."Lname" AS "ชื่อคนขับ",
+                 COUNT(CASE WHEN TO_NUMBER(TO_CHAR(s."Time", 'HH24')) < 17 THEN 1 END) AS "ก่อน 17.00 น.",
+                 COUNT(CASE WHEN TO_NUMBER(TO_CHAR(s."Time", 'HH24')) >= 17 THEN 1 END) AS "หลัง 17.00",
+                 COUNT(s."Sch_code") AS "สรุปงานทั้งหมด"
+          FROM "Schedule" s
+          JOIN "Member" m ON s."driver" = m."U_Name"
           WHERE 1=1
         `;
-        groupBy = ` GROUP BY r."route_name", TO_CHAR(s."Time", 'YYYY-MM-DD')`;
+        groupBy = ` GROUP BY m."Sname" || ' ' || m."Lname"`;
         break;
 
       case '5':
-        // Report 5: การใช้บริการแต่ละจุดจอดตามรอบเวลา
+        // รีพอร์ต 5: จำนวนงานของรถแต่ละคัน
         baseSql = `
-          SELECT st."St_name" AS "Station_Name",
-                 TO_CHAR(s."Time", 'HH24:MI') AS "Time_Round",
-                 COUNT(CASE WHEN t."br_station" = st."St_code" THEN 1 END) AS "Boarding_Count",
-                 COUNT(CASE WHEN t."de_station" = st."St_code" THEN 1 END) AS "Alighting_Count"
-          FROM "Station" st
-          LEFT JOIN "Ticket" t ON (t."br_station" = st."St_code" OR t."de_station" = st."St_code")
-          LEFT JOIN "Schedule" s ON t."sch_code" = s."Sch_code"
-          WHERE 1=1
-        `;
-        groupBy = ` GROUP BY st."St_name", TO_CHAR(s."Time", 'HH24:MI')`;
-        break;
-
-      case '6':
-        // Report 6: สรุปการมอบหมายงานให้คนขับ
-        baseSql = `
-          SELECT s."driver" AS "Driver_Name",
-                 COUNT(CASE WHEN TO_NUMBER(TO_CHAR(s."Time", 'HH24')) < 17 THEN 1 END) AS "Before_17_00",
-                 COUNT(CASE WHEN TO_NUMBER(TO_CHAR(s."Time", 'HH24')) >= 17 THEN 1 END) AS "After_17_00",
-                 COUNT(s."Sch_code") AS "Total_Rounds"
-          FROM "Schedule" s
-          WHERE 1=1
-        `;
-        groupBy = ` GROUP BY s."driver"`;
-        break;
-
-      case '7':
-        // Report 7: จำนวนการมอบหมายงานให้รถแต่ละคัน
-        baseSql = `
-          SELECT b."Bus_plate",
-                 COUNT(s."Sch_code") AS "Total_Rounds"
-          FROM "Schedule" s
-          JOIN "Bus" b ON s."bus" = b."Bus_code"
+          SELECT b."Bus_plate" AS "ทะเบียนรถ", 
+                 COUNT(s."Sch_code") AS "จำนวนรอบ"
+          FROM "Schedule" s 
+          JOIN "Bus" b ON s."bus" = b."Bus_code" 
           WHERE 1=1
         `;
         groupBy = ` GROUP BY b."Bus_plate"`;
@@ -701,35 +746,19 @@ app.get('/api/admin/reports/:report_id', verifyToken, async (req, res) => {
         return res.status(400).json({ message: 'ไม่พบหมายเลข Report ที่ระบุ' });
     }
 
-    //Filter
     if (date_start && date_end) {
       baseSql += ` AND TRUNC(s."Time") BETWEEN TO_DATE(:date_start, 'YYYY-MM-DD') AND TO_DATE(:date_end, 'YYYY-MM-DD')`;
       binds.date_start = date_start;
       binds.date_end = date_end;
     }
-    if (station && (report_id === '5')) {
-      baseSql += ` AND st."St_code" = :station`;
-      binds.station = station;
-    }
-    if (route && (report_id === '4')) {
-      baseSql += ` AND r."route_code" = :route`;
-      binds.route = route;
-    }
 
     const finalSql = baseSql + groupBy + ` ORDER BY ${sort_by} ${order === 'DESC' ? 'DESC' : 'ASC'}`;
-
     const result = await connection.execute(finalSql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
 
-    res.json({
-      success: true,
-      report_no: report_id,
-      total_rows: result.rows.length,
-      data: result.rows
-    });
-
+    res.json({ success: true, data: result.rows });
   } catch (error) {
-    console.error(`Report ${report_id} Error:`, error);
-    res.status(500).json({ message: 'เกิดข้อผิดพลาดในการดึงข้อมูลรายงาน' });
+    console.error(`🚨 รามิสพบ Error รายงานที่ ${report_id}:`, error.message);
+    res.status(500).json({ message: `Oracle Error: ${error.message}` });
   } finally {
     if (connection) { try { await connection.close(); } catch (err) { } }
   }

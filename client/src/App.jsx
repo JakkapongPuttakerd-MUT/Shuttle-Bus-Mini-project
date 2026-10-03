@@ -3,22 +3,19 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import './App.css';
 import 'react-datepicker/dist/react-datepicker.css';
 
+// นำเข้า Components ย่อยทั้งหมดที่บอสสร้างไว้
 import MainLayout from './components/MainLayout';
 import LoginOTP from './components/LoginOTP';
 import Dashboard from './components/Dashboard';
 import EmployeeManagement from './components/EmployeeManagement';
 import RouteManagement from './components/RouteManagement';
 import TicketManagement from './components/TicketManagement';
+import ReportManagement from './components/ReportManagement';
+import DriverDashboard from './components/DriverDashboard';
+import PassengerDashboard from './components/PassengerDashboard';
 
 export const ThemeContext = createContext();
 export const AuthContext = createContext();
-
-const PlaceholderPage = ({ title }) => (
-  <div className="content-container">
-    <h2 className="page-title">{title}</h2>
-    <div className="content-card"><p>อยู่ระหว่างการพัฒนาโครงสร้าง</p></div>
-  </div>
-);
 
 function App() {
   const [theme, setTheme] = useState('light');
@@ -46,8 +43,15 @@ function App() {
             <Route path="/admin/employees" element={<MainLayout><EmployeeManagement /></MainLayout>} />
             <Route path="/admin/routes" element={<MainLayout><RouteManagement /></MainLayout>} />
             <Route path="/admin/tickets" element={<MainLayout><TicketManagement /></MainLayout>} />
-            <Route path="/reports" element={<MainLayout><PlaceholderPage title="ระบบรายงาน" /></MainLayout>} />
-            <Route path="*" element={<Navigate to={isAuthenticated ? "/dashboard" : "/login"} />} />
+            <Route path="/driver" element={<DriverDashboard />} />
+            <Route path="/passenger" element={<PassengerDashboard />} />
+            <Route path="/reports" element={<MainLayout><ReportManagement /></MainLayout>} />
+            <Route path="*" element={
+              <Navigate to={
+                !isAuthenticated ? "/login" : 
+                localStorage.getItem('role') === 'Driver' ? "/driver" : localStorage.getItem('role') === 'Member' ? "/passenger" : "/dashboard"
+              } />
+            } />
           </Routes>
         </Router>
       </ThemeContext.Provider>
