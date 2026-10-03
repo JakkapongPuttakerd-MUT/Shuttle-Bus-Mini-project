@@ -110,9 +110,9 @@ const PassengerDashboard = () => {
         navigate('/login');
     };
 
-    // ตัวกรองเวลา: ซ่อนรถที่ออกไปแล้ว หรือเวลาเหลือไม่ถึง 10 นาที
+    // ตัวกรองเวลา: ซ่อนรถที่ออกไปแล้ว หรือเวลาเหลือไม่ถึง 15 นาที
     const now = new Date();
-    const tenMinsFromNow = new Date(now.getTime() + 10 * 60000);
+    const tenMinsFromNow = new Date(now.getTime() + 15 * 60000);
     const availableSchedules = schedules.filter(s => new Date(s.Time) > tenMinsFromNow);
 
     return (
@@ -139,15 +139,14 @@ const PassengerDashboard = () => {
                                 <thead>
                                     <tr>
                                         <th>เวลาออกรถ</th>
-                                        <th>สถานี (ขึ้น ➔ ลง)</th>
-                                        <th>ทะเบียนรถ</th>
+                                        <th>เส้นทางที่ผ่าน (เรียงตามลำดับ)</th>
+                                        <th>ข้อมูลรถ</th>
                                         <th>ที่นั่ง (เหลือ/ทั้งหมด)</th>
                                         <th>จัดการ</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {availableSchedules.map(s => {
-                                        // สร้างตัวแปรเช็กเวลาและที่นั่ง
                                         const schTime = new Date(s.Time);
                                         const isTooLate = schTime <= tenMinsFromNow;
                                         const isFull = s.available_seats <= 0;
@@ -158,15 +157,22 @@ const PassengerDashboard = () => {
                                                 <td style={{ fontWeight: 'bold', color: 'var(--primary-color)' }}>
                                                     {schTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
                                                 </td>
-                                                <td>{s.start_station} ➔ {s.end_station}</td>
-                                                <td>{s.Bus_plate}</td>
+
+                                                <td style={{ color: 'var(--primary-color)', lineHeight: '1.5' }}>
+                                                    {s.stations_list || 'ไม่มีข้อมูลสถานี'}
+                                                </td>
+
+                                                <td>
+                                                    <div><strong>{s.Bus_type}</strong></div>
+                                                    <div style={{ fontSize: '0.9em', color: 'gray' }}>ทะเบียน: {s.Bus_plate}</div>
+                                                </td>
+
                                                 <td>
                                                     <span className={`status-badge ${isFull ? 'danger' : 'success'}`}>
                                                         {s.available_seats} / {s.total_seats}
                                                     </span>
                                                 </td>
                                                 <td>
-                                                    {/* ปุ่มใหม่ที่ฉลาดขึ้นค่ะ */}
                                                     <button
                                                         className="btn-primary"
                                                         onClick={() => handleBookClick(s)}
@@ -180,7 +186,7 @@ const PassengerDashboard = () => {
                                         );
                                     })}
                                     {availableSchedules.length === 0 && (
-                                        <tr><td colSpan="5" style={{ textAlign: 'center' }}>ไม่มีรอบรถที่สามารถจองได้ในขณะนี้ค่ะ (อาจหมดรอบหรือใกล้เวลาออกเกินไป)</td></tr>
+                                        <tr><td colSpan="5" style={{ textAlign: 'center' }}>ไม่มีรอบรถที่สามารถจองได้ในขณะนี้ค่ะ</td></tr>
                                     )}
                                 </tbody>
                             </table>
@@ -196,8 +202,8 @@ const PassengerDashboard = () => {
                                 <thead>
                                     <tr>
                                         <th>รอบเวลา</th>
-                                        <th>สถานี (ขึ้น ➔ ลง)</th>
-                                        <th>ทะเบียนรถ</th>
+                                        <th>เส้นทางที่ผ่าน (เรียงตามลำดับ)</th>
+                                        <th>ข้อมูลรถ</th>
                                         <th>สถานะ</th>
                                         <th>จัดการ</th>
                                     </tr>
@@ -208,9 +214,17 @@ const PassengerDashboard = () => {
                                         const canCancel = t.tick_status === 'Booked' && !isPast;
                                         return (
                                             <tr key={t.Ticket_id}>
-                                                <td>{new Date(t.schedule_time).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' })} น.</td>
-                                                <td>{t.boarding_station} ➔ {t.destination_station}</td>
-                                                <td>{t.Bus_plate}</td>
+                                                <td style={{ fontWeight: 'bold' }}>
+                                                    {new Date(t.schedule_time).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' })} น.
+                                                </td>
+                                                <td style={{ color: 'var(--primary-color)', lineHeight: '1.5' }}>
+                                                    {t.stations_list || 'ไม่มีข้อมูลสถานี'}
+                                                </td>
+                                                <td>
+                                                    <div><strong>{t.Bus_type}</strong></div>
+                                                    <div style={{ fontSize: '0.9em', color: 'gray' }}>ทะเบียน: {t.Bus_plate}</div>
+                                                </td>
+
                                                 <td>
                                                     <span className={`status-badge ${t.tick_status === 'Check-in' || t.tick_status === 'Completed' ? 'success' : t.tick_status === 'Cancelled' ? 'danger' : ''}`}>
                                                         {t.tick_status}
@@ -218,9 +232,9 @@ const PassengerDashboard = () => {
                                                 </td>
                                                 <td>
                                                     {canCancel ? (
-                                                        <button className="btn-danger outline-cb" onClick={() => cancelTicket(t.Ticket_id)}> ยกเลิก</button>
+                                                        <button className="btn-danger outline-cb" onClick={() => cancelTicket(t.Ticket_id)}>❌ ยกเลิก</button>
                                                     ) : (
-                                                        <span style={{ color: 'var(--text-color)', fontSize: '0.9em', opacity: 0.6 }}>ไม่สามารถทำรายการ</span>
+                                                        <span style={{ color: 'var(--text-color)', fontSize: '0.9em', opacity: 0.6 }}>ทำรายการไม่ได้</span>
                                                     )}
                                                 </td>
                                             </tr>
@@ -240,10 +254,10 @@ const PassengerDashboard = () => {
                 <div className="modal-overlay">
                     <div className="modal-card">
                         <h3>ยืนยันการจองตั๋วโดยสาร</h3>
-                        <p style={{ margin: '15px 0' }}>
+                        <p style={{ margin: '15px 0', lineHeight: '1.6' }}>
                             <strong>เวลา:</strong> {new Date(selectedSch.Time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.<br />
-                            <strong>เส้นทาง:</strong> {selectedSch.start_station} ➔ {selectedSch.end_station}<br />
-                            <strong>รถทะเบียน:</strong> {selectedSch.Bus_plate}
+                            <strong>เส้นทางที่ผ่าน:</strong> <span style={{ color: 'var(--primary-color)' }}>{selectedSch.stations_list}</span><br />
+                            <strong>รถทะเบียน:</strong> {selectedSch.Bus_type} ({selectedSch.Bus_plate})
                         </p>
                         <div className="modal-actions">
                             <button type="button" className="btn-primary" onClick={confirmBooking}>ยืนยันการจอง</button>

@@ -3,7 +3,6 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import './App.css';
 import 'react-datepicker/dist/react-datepicker.css';
 
-// นำเข้า Components ย่อยทั้งหมดที่บอสสร้างไว้
 import MainLayout from './components/MainLayout';
 import LoginOTP from './components/LoginOTP';
 import Dashboard from './components/Dashboard';

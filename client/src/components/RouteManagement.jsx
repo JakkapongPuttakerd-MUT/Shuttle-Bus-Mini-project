@@ -6,26 +6,27 @@ const RouteManagement = () => {
   const [drivers, setDrivers] = useState([]);
   const [buses, setBuses] = useState([]);
   const [routesList, setRoutesList] = useState([]);
-  console.log("รามิสเช็กข้อมูลเส้นทาง:", routesList);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isEditMode, setIsEditMode] = useState(false);
-
   const [formData, setFormData] = useState({
-    Schedule_ID: '', Bus_ID: '', Driver_ID: '', route_code: '', Time: ''
+    route_code: '', bus: '', driver: '', time: ''
   });
+  const [expandedId, setExpandedId] = useState(null);
+
+  const toggleExpand = (id) => {
+    setExpandedId(expandedId === id ? null : id);
+  };
 
   const fetchData = async () => {
     try {
       const token = localStorage.getItem('token');
       const headers = { 'Authorization': `Bearer ${token}` };
       const baseUrl = 'http://localhost:5000';
-
       const [resSched, resDriver, resBus, resRoutes] = await Promise.all([
-        fetch(`${baseUrl}/api/admin/schedules/today`, { headers }),
+        fetch(`${baseUrl}/api/admin/schedules/details`, { headers }),
         fetch(`${baseUrl}/api/admin/drivers-only`, { headers }),
-        fetch(`${baseUrl}/api/admin/buses`, { headers }), 
-        fetch(`${baseUrl}/api/admin/routes-info`, { headers })
+        fetch(`${baseUrl}/api/admin/buses`, { headers }),
+        fetch(`${baseUrl}/api/admin/routes-dropdown`, { headers })
       ]);
 
       const [dataSched, dataDriver, dataBus, dataRoutes] = await Promise.all([
@@ -49,41 +50,31 @@ const RouteManagement = () => {
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-  const handleOpenModal = (schedule = null) => {
-    if (schedule) {
-      const formattedTime = schedule.Time || schedule.TIME ? new Date(schedule.Time || schedule.TIME).toISOString().slice(0, 16) : '';
-      setFormData({
-        Schedule_ID: schedule.Schedule_ID || schedule.SCHEDULE_ID || '',
-        Bus_ID: schedule.Bus_ID || schedule.BUS_ID || '',
-        Driver_ID: schedule.Driver_ID || schedule.DRIVER_ID || '',
-        route_code: schedule.route_code || schedule.ROUTE_CODE || '',
-        Time: formattedTime
-      });
-      setIsEditMode(true);
-    } else {
-      setFormData({ Schedule_ID: '', Bus_ID: '', Driver_ID: '', route_code: '', Time: '' });
-      setIsEditMode(false);
-    }
+  const handleOpenModal = () => {
+    setFormData({ route_code: '', bus: '', driver: '', time: '' });
     setIsModalOpen(true);
   };
 
   const handleSave = async (e) => {
     e.preventDefault();
     const token = localStorage.getItem('token');
-    const url = isEditMode
-      ? `http://localhost:5000/api/admin/schedules/${formData.Schedule_ID}`
-      : `http://localhost:5000/api/admin/schedules`;
+
+    // แปลงเวลาให้เป็น YYYY-MM-DD HH:mm:ss สำหรับส่งเข้า Database
+    const dateObj = new Date(formData.time);
+    const formattedTime = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')} ${String(dateObj.getHours()).padStart(2, '0')}:${String(dateObj.getMinutes()).padStart(2, '0')}:00`;
+
+    const payload = { ...formData, time: formattedTime, Time: formattedTime };
 
     try {
-      const response = await fetch(url, {
-        method: isEditMode ? 'PUT' : 'POST',
+      const response = await fetch(`http://localhost:5000/api/admin/schedules`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify(formData)
+        body: JSON.stringify(payload)
       });
       const result = await response.json();
       if (result.success) {
         setIsModalOpen(false);
-        fetchData();
+        fetchData(); 
       } else {
         alert("บันทึกไม่สำเร็จ: " + result.message);
       }
@@ -91,108 +82,167 @@ const RouteManagement = () => {
       alert("เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ค่ะ");
     }
   };
+  // ฟังก์ชันจัดกลุ่มและคำนวณเวลาแสดงผล Sorting 
+  const renderScheduleTable = () => {
 
-  const selectedRouteInfo = routesList.find(r =>
-    String(r.route_code || r.ROUTE_CODE) === String(formData.route_code)
-  );
+    const groupedMap = schedules.reduce((acc, curr) => {
+      const code = curr.Sch_code || curr.SCH_CODE;
+      if (!acc.has(code)) acc.set(code, []);
+      acc.get(code).push(curr);
+      return acc;
+    }, new Map());
+
+    const sortedGroups = Array.from(groupedMap.values());
+
+    return (
+      <table className="data-table" style={{ width: '100%', textAlign: 'left', marginTop: '20px' }}>
+        <thead>
+          <tr style={{ backgroundColor: 'var(--primary-color)', color: 'white' }}>
+            <th style={{ padding: '12px' }}>เวลาออกรถ</th>
+            <th style={{ padding: '12px' }}>เส้นทาง</th>
+            <th style={{ padding: '12px' }}>คนขับ</th>
+            <th style={{ padding: '12px' }}>ข้อมูลรถ</th>
+            <th style={{ padding: '12px', textAlign: 'center' }}>จัดการ</th>
+          </tr>
+        </thead>
+        <tbody>
+
+          {sortedGroups.map((group, index) => {
+            let accumulatedMinutes = 0;
+            const first = group[0];
+            const code = first.Sch_code || first.SCH_CODE;
+            const startTime = new Date(first.start_time || first.START_TIME);
+            const isExpanded = expandedId === code;
+
+            return (
+              <React.Fragment key={index}>
+                <tr style={{ borderBottom: '1px solid #ddd', backgroundColor: isExpanded ? '#f0f8ff' : 'white' }}>
+                  <td style={{ padding: '12px', fontWeight: 'bold' }}>
+                    <div style={{ color: 'var(--primary-color)', fontSize: '0.85em' }}>
+                      {startTime.toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    </div>
+                    {startTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
+                  </td>
+                  <td style={{ padding: '12px' }}>{first.route_name || first.ROUTE_NAME}</td>
+                  <td style={{ padding: '12px' }}>{first.driver_name || first.DRIVER_NAME}</td>
+                  <td style={{ padding: '12px' }}>{first.Bus_type || first.BUS_TYPE} <br /><span style={{ fontSize: '0.85em', color: 'gray' }}>({first.Bus_plate || first.BUS_PLATE})</span></td>
+                  <td style={{ padding: '12px', textAlign: 'center' }}>
+                    <button
+                      className={isExpanded ? "btn-secondary" : "btn-primary"}
+                      onClick={() => toggleExpand(code)}
+                      style={{ padding: '5px 10px', fontSize: '0.9em' }}
+                    >
+                      {isExpanded ? '▲ ซ่อน' : '▼ ดูป้ายรถ'}
+                    </button>
+                  </td>
+                </tr>
+
+                {isExpanded && (
+                  <tr>
+                    <td colSpan="5" style={{ padding: '15px 25px', backgroundColor: '#fafafa', borderBottom: '2px solid #ccc' }}>
+                      <table className="data-table" style={{ width: '100%', border: '1px solid #eee' }}>
+                        <thead>
+                          <tr style={{ backgroundColor: '#e9e9e9' }}>
+                            <th style={{ padding: '8px', width: '10%', textAlign: 'center' }}>ลำดับ</th>
+                            <th style={{ padding: '8px', width: '40%' }}>สถานี (ขึ้น ➔ ลง)</th>
+                            <th style={{ padding: '8px', width: '25%' }}>เวลาเดินทาง</th>
+                            <th style={{ padding: '8px', width: '25%' }}>เวลาถึงโดยประมาณ</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {group.map((step, i) => {
+                            const timeToNext = step.time_to_next || step.TIME_TO_NEXT || 0;
+                            const arrivalTime = new Date(startTime.getTime() + accumulatedMinutes * 60000);
+                            accumulatedMinutes += timeToNext;
+
+                            return (
+                              <tr key={i} style={{ borderBottom: '1px solid #eee' }}>
+                                <td style={{ padding: '8px', textAlign: 'center' }}>{step.SEQ_NO || step.SEQ_NO}</td>
+                                <td style={{ padding: '8px' }}>
+                                  {step.br_station_name || step.BR_STATION_NAME} ➔ {step.de_station_name || step.DE_STATION_NAME}
+                                </td>
+                                <td style={{ padding: '8px', color: '#666' }}>
+                                  {timeToNext > 0 ? `+${timeToNext} นาที` : 'ถึงที่หมาย'}
+                                </td>
+                                <td style={{ padding: '8px', fontWeight: 'bold', color: 'var(--primary-color)' }}>
+                                  {arrivalTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    );
+  };
 
   return (
     <div className="content-container">
-      <div className="page-header">
-        <h2 className="page-title">จัดการเส้นทางเดินรถ (วันนี้)</h2>
-        <button className="btn-primary" onClick={() => handleOpenModal()} style={{ width: 'auto', marginTop: 0 }}>
-          + เพิ่มเส้นทาง
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2 className="page-title">ตารางการเดินรถ</h2>
+        <button className="btn-primary" onClick={handleOpenModal} style={{ width: 'auto', marginTop: 0 }}>
+          + เพิ่มรอบรถใหม่
         </button>
       </div>
 
-      <div className="content-card">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Boarding Station</th>
-              <th>Destination</th>
-              <th>Time</th>
-              <th>Driver</th>
-              <th>Bus</th>
-              <th>จัดการ</th>
-            </tr>
-          </thead>
-          <tbody>
-            {schedules.map((s) => (
-              <tr key={s.Schedule_ID || s.SCHEDULE_ID}>
-                <td>{s.Boarding_Station || s.BOARDING_STATION}</td>
-                <td>{s.Destination || s.DESTINATION}</td>
-                <td>{new Date(s.Time || s.TIME).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' })}</td>
-                <td>{s.Sname || s.SNAME} {s.Lname || s.LNAME}</td>
-                <td>{s.Bus_plate || s.BUS_PLATE}</td>
-                <td>
-                  <button className="btn-text" onClick={() => handleOpenModal(s)}>แก้ไข</button>
-                </td>
-              </tr>
-            ))}
-            {schedules.length === 0 && (
-              <tr><td colSpan="6" style={{ textAlign: 'center' }}>ยังไม่มีรอบรถสำหรับวันนี้ค่ะ</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      {renderScheduleTable()}
 
       {isModalOpen && (
         <div className="modal-overlay">
           <div className="modal-card">
-            <h3>{isEditMode ? 'แก้ไขเส้นทางเดินรถ' : 'เพิ่มเส้นทางใหม่'}</h3>
+            <h3>เพิ่มรอบเดินรถใหม่</h3>
             <form onSubmit={handleSave}>
 
               <div className="input-group">
-                <label>เลือกเส้นทาง (Route)</label>
+                <label>เลือกเส้นทางหลัก (Route)</label>
                 <select name="route_code" value={formData.route_code} onChange={handleInputChange} className="select-input" required>
                   <option value="">-- เลือกเส้นทาง --</option>
                   {routesList.map(r => (
                     <option key={r.route_code || r.ROUTE_CODE} value={r.route_code || r.ROUTE_CODE}>
-                      รหัสเส้นทาง {r.route_code || r.ROUTE_CODE} : {r.br_station_name || r.BR_STATION_NAME} ➔ {r.de_station_name || r.DE_STATION_NAME}
+                      {r.route_name || r.ROUTE_NAME}
                     </option>
                   ))}
                 </select>
               </div>
 
-              {selectedRouteInfo && (
-                <div style={{ backgroundColor: 'var(--border-color)', padding: '10px', borderRadius: '8px', marginBottom: '15px', fontSize: '0.9em' }}>
-                  <strong>สถานีขึ้น:</strong> {selectedRouteInfo.br_station_name || selectedRouteInfo.BR_STATION_NAME} <br />
-                  <strong>สถานีลง:</strong> {selectedRouteInfo.de_station_name || selectedRouteInfo.DE_STATION_NAME}
-                </div>
-              )}
-
-             <div className="input-group">
-                <label>วันและเวลาเดินรถ (Date & Time)</label>
+              <div className="input-group">
+                <label>วันและเวลาออกเดินทาง (Date & Time)</label>
                 <DatePicker
-                  selected={formData.Time ? new Date(formData.Time) : null}
+                  selected={formData.time ? new Date(formData.time) : null}
                   onChange={(date) => {
                     if (date) {
                       const offset = date.getTimezoneOffset() * 60000;
                       const localISOTime = (new Date(date - offset)).toISOString().slice(0, 16);
-                      setFormData(prev => ({ ...prev, Time: localISOTime }));
+                      setFormData(prev => ({ ...prev, time: localISOTime }));
                     } else {
-                      setFormData(prev => ({ ...prev, Time: '' }));
+                      setFormData(prev => ({ ...prev, time: '' }));
                     }
                   }}
                   showTimeSelect
                   timeFormat="HH:mm"
-                  timeIntervals={15} 
+                  timeIntervals={15}
                   timeCaption="เวลา"
                   dateFormat="dd/MM/yyyy HH:mm"
                   className="select-input"
-                  placeholderText="คลิกเพื่อเลือกวันและเวลา"
+                  placeholderText="คลิกเพื่อเลือกวันและเวลาเริ่มออกเดินทาง"
                   required
                 />
               </div>
 
               <div className="input-group">
                 <label>เลือกรถ (Bus ทะเบียน)</label>
-                <select name="Bus_ID" value={formData.Bus_ID} onChange={handleInputChange} className="select-input" required>
+                <select name="bus" value={formData.bus} onChange={handleInputChange} className="select-input" required>
                   <option value="">-- เลือกรถ --</option>
-                  {buses?.map(b => (
+                  {buses.map(b => (
                     <option key={b.Bus_code || b.BUS_CODE} value={b.Bus_code || b.BUS_CODE}>
-                      ทะเบียน: {b.Bus_plate || b.BUS_PLATE} (ที่นั่ง: {b.Seats || b.SEATS})
+                      {b.Bus_type || b.BUS_TYPE} : {b.Bus_plate || b.BUS_PLATE}
                     </option>
                   ))}
                 </select>
@@ -200,7 +250,7 @@ const RouteManagement = () => {
 
               <div className="input-group">
                 <label>เลือกคนขับ (Driver)</label>
-                <select name="Driver_ID" value={formData.Driver_ID} onChange={handleInputChange} className="select-input" required>
+                <select name="driver" value={formData.driver} onChange={handleInputChange} className="select-input" required>
                   <option value="">-- เลือกคนขับ --</option>
                   {drivers.map(d => (
                     <option key={d.U_Name || d.U_NAME} value={d.U_Name || d.U_NAME}>
@@ -211,7 +261,7 @@ const RouteManagement = () => {
               </div>
 
               <div className="modal-actions">
-                <button type="submit" className="btn-primary">บันทึก</button>
+                <button type="submit" className="btn-primary">บันทึกเข้าตาราง</button>
                 <button type="button" className="btn-secondary" onClick={() => setIsModalOpen(false)}>ยกเลิก</button>
               </div>
             </form>

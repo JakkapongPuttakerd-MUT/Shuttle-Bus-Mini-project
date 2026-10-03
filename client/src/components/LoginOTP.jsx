@@ -49,7 +49,7 @@ const LoginOTP = () => {
       if (userRole === 'Driver') {
         navigate('/driver'); 
       } else if (userRole === 'Member') {
-        navigate('/passenger'); // รามิสเพิ่มแยกคนธรรมดาให้แล้วค่ะ
+        navigate('/passenger');
       } else {
         navigate('/dashboard'); 
       }

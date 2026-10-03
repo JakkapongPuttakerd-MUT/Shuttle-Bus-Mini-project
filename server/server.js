@@ -19,10 +19,7 @@ async function getDBConnection() {
     password: process.env.DB_PASSWORD,
     connectString: `${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_SERVICE}`
   });
-
 }
-console.log("ชี้ไปที่ DB:", process.env.DB_SERVICE, "User:", process.env.DB_USER);
-console.log("พิกัด DB จริง:", process.env.DB_HOST, process.env.DB_PORT, process.env.DB_SERVICE);
 
 const verifyToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -67,7 +64,7 @@ app.post('/api/login', async (req, res) => {
     const userFromDB = result.rows[0];
 
     if (!userFromDB) {
-      return res.status(401).json({ message: '401.1 ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
+      return res.status(401).json({ message: '401 ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
     }
 
     const dbHash = userFromDB.U_pass ? userFromDB.U_pass.trim() : '';
@@ -83,7 +80,7 @@ app.post('/api/login', async (req, res) => {
     const isMatch = await bcrypt.compare(u_pass, dbHash);
     console.log("ผลการเปรียบเทียบ bcrypt :", isMatch);
     if (!isMatch) {
-      return res.status(401).json({ message: '401.2 ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
+      return res.status(401).json({ message: '401 ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
     }
 
     const token = jwt.sign(
@@ -114,7 +111,7 @@ app.get('/api/user/profile', verifyToken, async (req, res) => {
     connection = await getDBConnection();
     const sql = `SELECT "Sname", "Lname" FROM "Member" WHERE "U_Name" = :username`;
     const result = await connection.execute(sql, [req.user.username], { outFormat: oracledb.OUT_FORMAT_OBJECT });
-    
+
     if (result.rows.length > 0) {
       res.json({ success: true, Sname: result.rows[0].Sname, Lname: result.rows[0].Lname });
     } else {
@@ -130,52 +127,52 @@ app.get('/api/user/profile', verifyToken, async (req, res) => {
 //======================================================================================================================================
 //                                                     Driver System
 //======================================================================================================================================
-//Schedule ของคนขับ
+// ดึง Schedule ของคนขับ
 app.get('/api/driver/schedules', verifyToken, async (req, res) => {
   const driverUsername = req.user.username;
   let connection;
 
   try {
     connection = await getDBConnection();
-
-    // รามิสใช้เฉพาะตารางหลักที่ชัวร์ว่ามีอยู่จริง 100% ค่ะ
     const sql = ` 
       SELECT 
-        s."Sch_code", 
-        s."Time", 
-        r."route_code" AS "route_name",
-        st1."St_name" AS "start_station",
-        st2."St_name" AS "end_station",
+        sch."Sch_code", 
+        sch."Time" AS "start_time", 
+        r."route_name",
+        b."Bus_type",
         b."Bus_plate", 
         b."Seats" AS "total_seats",
-        (SELECT COUNT(t."Ticket_id") FROM "Ticket" t WHERE t."sch_code" = s."Sch_code" AND t."tick_status" IN ('Booked', 'Check-in')) AS "booked_seats"
-      FROM "Schedule" s
-      JOIN "Route" r ON s."route_code" = r."route_code"
-      JOIN "Bus" b ON s."bus" = b."Bus_code"
-      LEFT JOIN "Station" st1 ON r."br_station" = st1."St_code"
-      LEFT JOIN "Station" st2 ON r."de_station" = st2."St_code"
-      WHERE s."driver" = :driver_username 
-        AND TRUNC(s."Time") = TRUNC(SYSDATE)
-      ORDER BY s."Time" ASC
+        (SELECT COUNT(t."Ticket_id") FROM "Ticket" t WHERE t."sch_code" = sch."Sch_code" AND t."tick_status" IN ('Booked', 'Check-in')) AS "booked_seats",
+        rs."SEQ_NO",
+        st_br."St_name" AS "br_station_name",
+        st_de."St_name" AS "de_station_name",
+        rs."time_to_next"
+      FROM "Schedule" sch
+      JOIN "Route" r ON sch."route_code" = r."route_code"
+      JOIN "Bus" b ON sch."bus" = b."Bus_code"
+      LEFT JOIN "Route_steps" rs ON sch."route_code" = rs."Route_code"
+      LEFT JOIN "Station" st_br ON rs."br_station" = st_br."St_code"
+      LEFT JOIN "Station" st_de ON rs."de_station" = st_de."St_code"
+      WHERE sch."driver" = :driver_username 
+        AND TRUNC(sch."Time") = TRUNC(SYSDATE)
+      ORDER BY sch."Time" ASC, rs."SEQ_NO" ASC
     `;
-    const result = await connection.execute(sql, [driverUsername], {
-      outFormat: oracledb.OUT_FORMAT_OBJECT
-    });
+    
+    const result = await connection.execute(sql, [driverUsername], { outFormat: oracledb.OUT_FORMAT_OBJECT });
 
+    // คำนวณที่นั่งว่างก่อนส่งให้หน้าเว็บ
     const responseData = result.rows.map(row => ({
       ...row,
-      available_seats: row.total_seats - row.booked_seats
+      available_seats: (row.total_seats || 0) - (row.booked_seats || 0)
     }));
 
     res.json({ success: true, data: responseData });
 
   } catch (error) {
-    console.error('🚨 รามิสพบ Error Driver Schedule:', error.message);
+    console.error('🚨 [API] Error Driver Schedule:', error.message);
     res.status(500).json({ message: `Oracle Error: ${error.message}` });
   } finally {
-    if (connection) {
-      try { await connection.close(); } catch (err) { console.error(err); }
-    }
+    if (connection) { try { await connection.close(); } catch (err) {} }
   }
 });
 
@@ -186,7 +183,6 @@ app.get('/api/driver/schedules/:sch_code/tickets', verifyToken, async (req, res)
 
   try {
     connection = await getDBConnection();
-
     const sql = `
       SELECT 
         t."sch_code" AS "round_code",        
@@ -220,15 +216,12 @@ app.get('/api/driver/schedules/:sch_code/tickets', verifyToken, async (req, res)
   }
 });
 app.put('/api/driver/schedules/:sch_code/complete', verifyToken, async (req, res) => {
-  // เช็กสิทธิ์ว่าต้องเป็นคนขับเท่านั้น
   if (req.user.role !== 'Driver') return res.status(403).json({ message: 'เฉพาะคนขับเท่านั้น' });
-
   const { sch_code } = req.params;
   let connection;
 
   try {
     connection = await getDBConnection();
-    // อัปเดตเฉพาะตั๋วที่ยัง Active (Booked หรือ Check-in) ในรอบรถนั้น ให้กลายเป็น Completed
     const sql = `
       UPDATE "Ticket" 
       SET "tick_status" = 'Completed' 
@@ -248,29 +241,31 @@ app.put('/api/driver/schedules/:sch_code/complete', verifyToken, async (req, res
 //======================================================================================================================================
 //                                                 Passenger System
 //======================================================================================================================================
-// 1. ดึงตารางเดินรถของวันนี้ (แสดงให้ผู้โดยสารเห็น)
+// 1. ดึงตารางเดินรถ
 app.get('/api/member/schedules', verifyToken, async (req, res) => {
   let connection;
   try {
     connection = await getDBConnection();
+
     const sql = `
       SELECT 
         s."Sch_code", s."Time", r."route_code",
-        st1."St_name" AS "start_station",
-        st2."St_name" AS "end_station",
-        b."Bus_plate", b."Seats" AS "total_seats",
+        (
+          SELECT LISTAGG(st."St_name", ' ➔ ') WITHIN GROUP (ORDER BY rs."seq_no") 
+          FROM "Route_stop" rs 
+          JOIN "Station" st ON rs."St_code" = st."St_code" 
+          WHERE rs."route_code" = s."route_code"
+        ) AS "stations_list",
+        b."Bus_type", b."Bus_plate", b."Seats" AS "total_seats",
         (SELECT COUNT(t."Ticket_id") FROM "Ticket" t WHERE t."sch_code" = s."Sch_code" AND t."tick_status" IN ('Booked', 'Check-in')) AS "booked_seats"
       FROM "Schedule" s
       JOIN "Route" r ON s."route_code" = r."route_code"
       JOIN "Bus" b ON s."bus" = b."Bus_code"
-      LEFT JOIN "Station" st1 ON r."br_station" = st1."St_code"
-      LEFT JOIN "Station" st2 ON r."de_station" = st2."St_code"
       WHERE TRUNC(s."Time") = TRUNC(SYSDATE)
       ORDER BY s."Time" ASC
     `;
     const result = await connection.execute(sql, [], { outFormat: oracledb.OUT_FORMAT_OBJECT });
 
-    // คำนวณที่นั่งว่างส่งไปให้หน้าบ้าน
     const responseData = result.rows.map(row => ({
       ...row,
       available_seats: row.total_seats - row.booked_seats
@@ -295,7 +290,6 @@ app.post('/api/member/tickets', verifyToken, async (req, res) => {
     const ticketId = Date.now().toString().slice(-8);
     const randomSeat = Math.floor(Math.random() * 40) + 1; // สุ่มที่นั่งชั่วคราว
 
-    // รามิสเพิ่มคอลัมน์ expire_time เข้าไป โดยดึงเวลา Time จากตาราง Schedule มาใส่ให้เลยค่ะ
     const sql = `
       INSERT INTO "Ticket" (
         "Ticket_id", "U_Name", "sch_code", "br_station", "de_station", 
@@ -334,14 +328,16 @@ app.get('/api/member/my-tickets', verifyToken, async (req, res) => {
       SELECT 
         t."Ticket_id", t."tick_status", t."booking_time", t."seat_no",
         s."Time" AS "schedule_time",
-        b."Bus_plate",
-        st1."St_name" AS "boarding_station",
-        st2."St_name" AS "destination_station"
+        b."Bus_type", b."Bus_plate",
+        (
+          SELECT LISTAGG(st."St_name", ' ➔ ') WITHIN GROUP (ORDER BY rs."seq_no") 
+          FROM "Route_stop" rs 
+          JOIN "Station" st ON rs."St_code" = st."St_code" 
+          WHERE rs."route_code" = s."route_code"
+        ) AS "stations_list"
       FROM "Ticket" t
       JOIN "Schedule" s ON t."sch_code" = s."Sch_code"
       JOIN "Bus" b ON s."bus" = b."Bus_code"
-      JOIN "Station" st1 ON t."br_station" = st1."St_code"
-      JOIN "Station" st2 ON t."de_station" = st2."St_code"
       WHERE t."U_Name" = :username
       ORDER BY s."Time" DESC
     `;
@@ -383,12 +379,10 @@ app.get('/api/admin/members', verifyToken, async (req, res) => {
 
   try {
     connection = await getDBConnection();
-    // รามิสแก้ชื่อคอลัมน์ Sname, Lname, U_phone ให้ตรงกับ Database ค่ะ
     let sql = `SELECT "U_Name", "Sname", "Lname", "Email", "U_phone", "Role_name" FROM "Member" WHERE 1=1`;
     const binds = {};
 
     if (search) {
-      // รามิสแก้เงื่อนไขระบบค้นหาให้ใช้ Sname และ Lname ด้วยค่ะ จะได้ค้นหาชื่อได้ไม่ Error
       sql += ` AND (LOWER("U_Name") LIKE LOWER(:search) OR LOWER("Sname") LIKE LOWER(:search) OR LOWER("Lname") LIKE LOWER(:search))`;
       binds.search = `%${search}%`;
     }
@@ -408,12 +402,12 @@ app.get('/api/admin/members', verifyToken, async (req, res) => {
     if (connection) { try { await connection.close(); } catch (err) { } }
   }
 });
+
 //User management 
 app.put('/api/admin/members/:username', verifyToken, async (req, res) => {
   if (req.user.role !== 'Admin') return res.status(403).json({ message: 'ไม่มีสิทธิ์เข้าถึง' });
 
   const { username } = req.params;
-  // รามิสแก้ตัวแปรรับค่าจาก React ให้ตรงกับชื่อใน Database ค่ะ
   const { Sname, Lname, Email, U_phone, Role_name } = req.body;
   let connection;
 
@@ -434,41 +428,45 @@ app.put('/api/admin/members/:username', verifyToken, async (req, res) => {
 });
 
 //======================================================================================================================================
-//                                          Schedule & Route Management (จัดกลุ่มใหม่ให้ถูกต้อง)
+//                                          Schedule & Route Management 
 //======================================================================================================================================
 
-// 1. ดึงรอบรถวันนี้
-app.get('/api/admin/schedules/today', verifyToken, async (req, res) => {
+// ดึงข้อมูลตารางเดินรถทั้งหมด (Admin)
+app.get('/api/admin/schedules', verifyToken, async (req, res) => {
   let connection;
   try {
     connection = await getDBConnection();
-    const result = await connection.execute(
-      `SELECT 
-         s."Sch_code" AS "Schedule_ID", 
-         s."Time", 
-         b."Bus_plate", 
-         m."Sname", 
-         m."Lname",
-         st_br."St_name" AS "Boarding_Station", 
-         st_de."St_name" AS "Destination",
-         s."bus" AS "Bus_ID", 
-         s."driver" AS "Driver_ID", 
-         s."route_code"
-       FROM "Schedule" s
-       LEFT JOIN "Bus" b ON s."bus" = b."Bus_code"
-       LEFT JOIN "Member" m ON s."driver" = m."U_Name"
-       LEFT JOIN "Route" r ON s."route_code" = r."route_code"
-       LEFT JOIN "Station" st_br ON r."br_station" = st_br."St_code"
-       LEFT JOIN "Station" st_de ON r."de_station" = st_de."St_code"
-       WHERE TRUNC(s."Time") = TRUNC(SYSDATE)`,
-      [], { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
+    const sql = `
+      SELECT 
+        s."Sch_code", 
+        s."Time", 
+        r."route_code" AS "route_name",
+        (
+          SELECT LISTAGG(st."St_name", ' ➔ ') WITHIN GROUP (ORDER BY rs."seq_no") 
+          FROM "Route_stop" rs 
+          JOIN "Station" st ON rs."St_code" = st."St_code" 
+          WHERE rs."route_code" = s."route_code"
+        ) AS "stations_list",
+        m."Sname" || ' ' || m."Lname" AS "driver_name",
+        b."Bus_type",
+        b."Bus_plate",
+        b."Seats" AS "total_seats"
+      FROM "Schedule" s
+      JOIN "Route" r ON s."route_code" = r."route_code"
+      JOIN "Bus" b ON s."bus" = b."Bus_code"
+      JOIN "Member" m ON s."driver" = m."U_Name"
+      ORDER BY s."Time" ASC
+    `;
+    const result = await connection.execute(sql, [], { outFormat: oracledb.OUT_FORMAT_OBJECT });
     res.json({ success: true, data: result.rows });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
-  finally { if (connection) await connection.close(); }
+  } catch (error) {
+    console.error('🚨 รามิสพบ Error Admin Schedules:', error.message);
+    res.status(500).json({ message: `Oracle Error: ${error.message}` });
+  } finally {
+    if (connection) { try { await connection.close(); } catch (err) { } }
+  }
 });
-
-// 2. ดึงข้อมูลคนขับ
+// 1. ดึงข้อมูลคนขับ (ดักจับ Error)
 app.get('/api/admin/drivers-only', verifyToken, async (req, res) => {
   let connection;
   try {
@@ -477,72 +475,102 @@ app.get('/api/admin/drivers-only', verifyToken, async (req, res) => {
       `SELECT "U_Name", "Sname", "Lname" FROM "Member" WHERE "Role_name" = 'Driver'`,
       [], { outFormat: oracledb.OUT_FORMAT_OBJECT }
     );
+    console.log("👨‍✈️ [API] ดึงข้อมูลคนขับได้:", result.rows.length, "คน");
     res.json({ success: true, data: result.rows });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) { 
+    console.error("🚨 [API] Error ดึงคนขับ:", err.message);
+    res.status(500).json({ success: false, message: err.message }); 
+  }
   finally { if (connection) await connection.close(); }
 });
 
-// 3. ดึงข้อมูลรถ
+// 2. ดึงข้อมูลรถ (ดักจับ Error)
 app.get('/api/admin/buses', verifyToken, async (req, res) => {
   let connection;
   try {
     connection = await getDBConnection();
-    // รามิสใส่ฟันหนูกลับคืนให้ตารางและคอลัมน์ เพื่อล็อกตัวพิมพ์ให้ตรงฐานข้อมูลเป๊ะๆ ค่ะ
-    const result = await connection.execute(
-      `SELECT "Bus_code", "Bus_plate", "Seats" FROM "Bus"`,
-      [], { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
+    const sql = `SELECT "Bus_code", "Bus_type", "Bus_plate", "Seats" FROM "Bus" ORDER BY "Bus_code" ASC`;
+    const result = await connection.execute(sql, [], { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    console.log("🚌 [API] ดึงข้อมูลรถได้:", result.rows.length, "คัน");
     res.json({ success: true, data: result.rows });
+  } catch (error) {
+    console.error("🚨 [API] Error ดึงข้อมูลรถ:", error.message);
+    res.status(500).json({ message: `Oracle Error: ${error.message}` });
+  } finally {
+    if (connection) { try { await connection.close(); } catch (err) { } }
+  }
+});
+
+// 3. ดึงข้อมูลเส้นทาง (ดักจับ Error)
+app.get('/api/admin/routes-info', verifyToken, async (req, res) => {
+  let connection;
+  try {
+    connection = await getDBConnection();
+    
+    const sql = `
+      SELECT 
+        r."route_code", 
+        r."route_name", 
+        r."total_time",
+        rs."Step_code",
+        rs."br_station",
+        rs."de_station",
+        rs."SEQ_NO"
+      FROM "Route" r
+      LEFT JOIN "Route_steps" rs ON r."route_code" = rs."Route_code"
+      ORDER BY r."route_code" ASC, rs."SEQ_NO" ASC
+    `;
+    
+    const result = await connection.execute(sql, [], { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    console.log("🛣️ [API] ดึงข้อมูลเส้นทางพร้อมจุดจอดได้:", result.rows.length, "รายการ");
+    
+    res.json({ success: true, data: result.rows });
+    
+  } catch (err) { 
+    console.error("🚨 [API] Error ดึงข้อมูลเส้นทาง:", err.message);
+    res.status(500).json({ success: false, message: err.message }); 
+  }
+  finally { 
+    if (connection) {
+      try { await connection.close(); } catch (e) {} 
+    }
+  }
+});
+
+app.post('/api/admin/schedules', verifyToken, async (req, res) => {
+  let connection;
+  try {
+    const { time, Time, driver, Driver_ID, bus, Bus_ID, route_code } = req.body;
+    
+    const d = new Date(time || Time);
+
+    const safeTimeString = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:00`;
+
+    const targetDriver = driver || Driver_ID;
+    const targetBus = bus || Bus_ID;
+
+    connection = await getDBConnection();
+    const seqResult = await connection.execute(`SELECT NVL(MAX("Sch_code"), 0) + 1 AS NEXT_ID FROM "Schedule"`);
+    const nextId = seqResult.rows[0][0];
+
+    const sql = `
+      INSERT INTO "Schedule" ("Sch_code", "Time", "driver", "bus", "route_code") 
+      VALUES (:1, TO_TIMESTAMP(:2, 'YYYY-MM-DD HH24:MI:SS'), :3, :4, :5)
+    `;
+    
+    await connection.execute(sql, [nextId, safeTimeString, targetDriver, targetBus, route_code], { autoCommit: true });
+    
+    res.json({ success: true, message: 'บันทึกรอบรถสำเร็จ' });
+
   } catch (err) {
-    console.error("🚨 Bus Error:", err.message);
+    console.error("🚨 [API] Error บันทึกรอบรถ:", err.message);
     res.status(500).json({ success: false, message: err.message });
   } finally {
     if (connection) await connection.close();
   }
 });
 
-// 4. ดึงข้อมูลเส้นทาง
-app.get('/api/admin/routes-info', verifyToken, async (req, res) => {
-  let connection;
-  try {
-    connection = await getDBConnection();
-    const result = await connection.execute(
-      `SELECT 
-         r."route_code",
-         st_br."St_name" AS "br_station_name",
-         st_de."St_name" AS "de_station_name"
-       FROM "Route" r
-       LEFT JOIN "Station" st_br ON r."br_station" = st_br."St_code"
-       LEFT JOIN "Station" st_de ON r."de_station" = st_de."St_code"`,
-      [], { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
-    res.json({ success: true, data: result.rows });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
-  finally { if (connection) await connection.close(); }
-});
-
-// 5. เพิ่มรอบรถ (Schedule POST)
-app.post('/api/admin/schedules', verifyToken, async (req, res) => {
-  let connection;
-  try {
-    const { Bus_ID, Driver_ID, route_code, Time } = req.body;
-    connection = await getDBConnection();
-
-    const idResult = await connection.execute(`SELECT NVL(MAX("Sch_code"), 1000) + 1 FROM "Schedule"`);
-    const newSchCode = idResult.rows[0][0];
-
-    await connection.execute(
-      `INSERT INTO "Schedule" ("Sch_code", "bus", "driver", "route_code", "Time") 
-       VALUES (:1, :2, :3, :4, TO_TIMESTAMP(:5, 'YYYY-MM-DD"T"HH24:MI'))`,
-      [newSchCode, Bus_ID, Driver_ID, route_code, Time],
-      { autoCommit: true }
-    );
-    res.json({ success: true, message: 'เพิ่มรอบรถสำเร็จ' });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
-  finally { if (connection) await connection.close(); }
-});
-
-// 6. แก้ไขรอบรถ (Schedule PUT)
+// 6. แก้ไขรอบรถ
 app.put('/api/admin/schedules/:id', verifyToken, async (req, res) => {
   const { Bus_ID, Driver_ID, route_code, Time } = req.body;
   const schCode = req.params.id;
@@ -561,7 +589,7 @@ app.put('/api/admin/schedules/:id', verifyToken, async (req, res) => {
   finally { if (connection) await connection.close(); }
 });
 
-// 7. ลบรอบรถ (Schedule DELETE)
+// 7. ลบรอบรถ
 app.delete('/api/admin/schedules/:id', verifyToken, async (req, res) => {
   const schCode = req.params.id;
   let connection;
@@ -586,7 +614,6 @@ app.get('/api/admin/tickets', verifyToken, async (req, res) => {
 
   try {
     connection = await getDBConnection();
-    // รามิสลบ r."route_name" ออกไปแล้วค่ะ ตัดปัญหาชื่อคอลัมน์ไม่ตรง
     let sql = `
       SELECT 
         t."Ticket_id", t."U_Name", t."seat_no", t."tick_status", t."booking_time",
@@ -623,37 +650,44 @@ app.get('/api/admin/tickets', verifyToken, async (req, res) => {
   }
 });
 
-//counting
-
-app.get('/api/admin/dashboard-stats', async (req, res) => {
+// counting 
+app.get('/api/admin/dashboard-stats', verifyToken, async (req, res) => {
   let connection;
   try {
     connection = await getDBConnection();
 
-    const busResult = await connection.execute(
-      `SELECT COUNT(*) AS TOTAL_BUSES FROM "Bus"`, [], { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
-    const driverResult = await connection.execute(
-      `SELECT COUNT(*) AS TOTAL_DRIVERS FROM "Member" WHERE "Role_name" = 'Driver'`, [], { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
-    const tripResult = await connection.execute(
-      `SELECT COUNT(*) AS TRIPS_TODAY FROM "Schedule" WHERE TRUNC("Time") = TRUNC(SYSDATE)`, [], { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
+    console.log("===========================================");
+    console.log("🕵️‍♀️ [Backend] รามิสเริ่มดักจับข้อมูล Dashboard...");
 
-    res.json({
-      success: true,
-      data: {
-        buses: busResult.rows[0].TOTAL_BUSES || 0,
-        drivers: driverResult.rows[0].TOTAL_DRIVERS || 0,
-        tripsToday: tripResult.rows[0].TRIPS_TODAY || 0
-      }
-    });
+    const options = { outFormat: oracledb.OUT_FORMAT_OBJECT };
+
+    const busResult = await connection.execute(`SELECT COUNT(*) AS TOTAL FROM "Bus"`, [], options);
+    console.log("🚌 1. ข้อมูลรถบัส (Raw):", busResult.rows);
+
+    const driverResult = await connection.execute(`SELECT COUNT(*) AS TOTAL FROM "Member" WHERE "Role_name" = 'Driver'`, [], options);
+    console.log("👨‍✈️ 2. ข้อมูลคนขับ (Raw):", driverResult.rows);
+
+    const tripResult = await connection.execute(`SELECT COUNT(*) AS TOTAL FROM "Schedule" WHERE TRUNC("Time") = TRUNC(SYSDATE)`, [], options);
+    console.log("🗓️ 3. ข้อมูลรอบรถวันนี้ (Raw):", tripResult.rows);
+
+    // ดึงตัวเลขออกมา
+    const responseData = {
+      buses: busResult.rows.length > 0 ? (busResult.rows[0].TOTAL || busResult.rows[0].total || 0) : 0,
+      drivers: driverResult.rows.length > 0 ? (driverResult.rows[0].TOTAL || driverResult.rows[0].total || 0) : 0,
+      tripsToday: tripResult.rows.length > 0 ? (tripResult.rows[0].TOTAL || tripResult.rows[0].total || 0) : 0
+    };
+
+    console.log("📤 4. สรุปตัวเลขที่จะส่งให้หน้าบ้าน:", responseData);
+    console.log("===========================================");
+
+    res.json({ success: true, data: responseData });
+
   } catch (error) {
-    console.error('รามิสพบข้อผิดพลาดตอนดึงสถิติ Dashboard ค่ะ:', error);
+    console.error('🚨 [Backend] พังตอนดึงข้อมูล! สาเหตุ:', error.message);
     res.status(500).json({ success: false, message: 'ไม่สามารถดึงข้อมูลสรุปได้' });
   } finally {
     if (connection) {
-      try { await connection.close(); } catch (err) { console.error(err); }
+      try { await connection.close(); } catch (err) { }
     }
   }
 });
@@ -761,6 +795,80 @@ app.get('/api/admin/reports/:report_id', verifyToken, async (req, res) => {
     res.status(500).json({ message: `Oracle Error: ${error.message}` });
   } finally {
     if (connection) { try { await connection.close(); } catch (err) { } }
+  }
+});
+app.get('/api/admin/schedules/today', verifyToken, async (req, res) => {
+  let connection;
+  try {
+    connection = await getDBConnection();
+    const result = await connection.execute(
+      `SELECT * FROM "Schedule" WHERE TRUNC("Time") = TRUNC(SYSDATE)`,
+      [], { outFormat: oracledb.OUT_FORMAT_OBJECT }
+    );
+    res.json({ success: true, data: result.rows });
+  } catch (err) {
+    res.json({ success: true, data: [] });
+  } finally {
+    if (connection) { try { await connection.close(); } catch (err) {} }
+  }
+});
+
+// API สำหรับดึงข้อมูลแสดงผล
+app.get('/api/admin/schedules/details', verifyToken, async (req, res) => {
+  let connection;
+  try {
+    connection = await getDBConnection();
+    
+    const sql = `
+      SELECT 
+        sch."Sch_code",
+        sch."Time" AS "start_time",
+        m."Sname" || ' ' || m."Lname" AS "driver_name",
+        b."Bus_type",
+        b."Bus_plate",
+        r."route_name",
+        rs."SEQ_NO",
+        st_br."St_name" AS "br_station_name",
+        st_de."St_name" AS "de_station_name",
+        rs."time_to_next"
+      FROM "Schedule" sch
+      LEFT JOIN "Member" m ON sch."driver" = m."U_Name"
+      LEFT JOIN "Bus" b ON sch."bus" = b."Bus_code"
+      LEFT JOIN "Route" r ON sch."route_code" = r."route_code"
+      LEFT JOIN "Route_steps" rs ON sch."route_code" = rs."Route_code"
+      LEFT JOIN "Station" st_br ON rs."br_station" = st_br."St_code"
+      LEFT JOIN "Station" st_de ON rs."de_station" = st_de."St_code"
+      ORDER BY TRUNC(sch."Time") DESC, sch."Time" ASC, rs."SEQ_NO" ASC
+    `;
+    
+    const result = await connection.execute(sql, [], { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    res.json({ success: true, data: result.rows });
+
+  } catch (err) {
+    console.error("🚨 [API] Error ดึงข้อมูลแสดงผล:", err.message);
+    res.status(500).json({ success: false, message: err.message });
+  } finally {
+    if (connection) await connection.close();
+  }
+});
+
+app.get('/api/admin/routes-dropdown', verifyToken, async (req, res) => {
+  let connection;
+  try {
+    connection = await getDBConnection();
+    
+    const sql = `SELECT "route_code", "route_name" FROM "Route" ORDER BY "route_code" ASC`;
+    const result = await connection.execute(sql, [], { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    
+    res.json({ success: true, data: result.rows });
+    
+  } catch (err) { 
+    console.error("🚨 [API] Error ดึงเส้นทางหลักทำ Dropdown:", err.message);
+    res.status(500).json({ success: false, message: err.message }); 
+  } finally { 
+    if (connection) {
+      try { await connection.close(); } catch (e) {} 
+    }
   }
 });
 

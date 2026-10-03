@@ -5,7 +5,6 @@ const TicketManagement = () => {
   const [tickets, setTickets] = useState([]);
   const [filteredTickets, setFilteredTickets] = useState([]);
 
-  // State สำหรับเก็บค่าตัวกรองทั้งหมด
   const [searchName, setSearchName] = useState('');
   const [filterDate, setFilterDate] = useState('');
   const [filterDriver, setFilterDriver] = useState('');
@@ -14,11 +13,10 @@ const TicketManagement = () => {
   const [filterBusPlate, setFilterBusPlate] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
 
-  // ฟังก์ชันดึงข้อมูลจาก API (หลังบ้าน)
   const fetchTickets = async () => {
     try {
       const token = localStorage.getItem('token');
-      // ยิงไปที่ API ตั๋วของแอดมิน
+
       const response = await fetch('http://localhost:5000/api/admin/tickets', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -26,7 +24,7 @@ const TicketManagement = () => {
 
       if (result.success) {
         setTickets(result.data);
-        setFilteredTickets(result.data); // ตอนแรกให้แสดงทั้งหมด
+        setFilteredTickets(result.data);
       } else {
         alert("ดึงข้อมูลตั๋วไม่สำเร็จ: " + result.message);
       }
@@ -39,7 +37,6 @@ const TicketManagement = () => {
     fetchTickets();
   }, []);
 
-  // Effect ตัวนี้จะทำงานอัตโนมัติเมื่อบอสพิมพ์หรือเปลี่ยนตัวกรองใดๆ
   useEffect(() => {
     let result = tickets;
 
@@ -47,7 +44,7 @@ const TicketManagement = () => {
       result = result.filter(t => (t.U_Name || '').toLowerCase().includes(searchName.toLowerCase()));
     }
     if (filterDate) {
-      // เทียบวันที่แบบ YYYY-MM-DD
+
       result = result.filter(t => {
         if (!t.schedule_time) return false;
         const ticketDate = new Date(t.schedule_time).toISOString().split('T')[0];
@@ -73,7 +70,7 @@ const TicketManagement = () => {
     setFilteredTickets(result);
   }, [searchName, filterDate, filterDriver, filterBoarding, filterDestination, filterBusPlate, filterStatus, tickets]);
 
-  // ตัวช่วยสร้าง Dropdown ให้มีตัวเลือกตามข้อมูลที่มีจริงในฐานข้อมูล
+
   const uniqueOptions = (key) => [...new Set(tickets.map(t => t[key]).filter(Boolean))];
 
   return (
@@ -82,7 +79,6 @@ const TicketManagement = () => {
         <h2 className="page-title">ระบบจัดการตั๋วโดยสาร</h2>
       </div>
 
-      {/* แผงควบคุมตัวกรอง (Filters) */}
       <div className="content-card" style={{ marginBottom: '20px', display: 'flex', flexWrap: 'wrap', gap: '15px' }}>
         <div className="input-group" style={{ flex: '1 1 200px' }}>
           <label>ค้นหาชื่อผู้จอง</label>

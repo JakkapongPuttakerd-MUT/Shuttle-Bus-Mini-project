@@ -8,17 +8,23 @@ const Dashboard = () => {
     const fetchDashboardData = async () => {
       try {
         const token = localStorage.getItem('token');
+        console.log('🌐 [Frontend] เริ่มดึงข้อมูล Dashboard (มี Token ไหม?):', !!token);
 
         const response = await fetch('http://localhost:5000/api/admin/dashboard-stats', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
+
         const result = await response.json();
+        console.log('📥 [Frontend] ข้อมูลที่รับมาจากหลังบ้าน:', result);
 
         if (result.success) {
           setStats(result.data);
+          console.log('✨ [Frontend] อัปเดตหน้าจอสำเร็จ!');
+        } else {
+          console.warn('⚠️ [Frontend] API ฟ้องว่าดึงไม่ได้:', result.message);
         }
       } catch (error) {
-        console.error('รามิสดึงข้อมูล Dashboard ไม่สำเร็จค่ะ:', error);
+        console.error('🚨 [Frontend] ดึงข้อมูลไม่สำเร็จจังๆ:', error);
       }
     };
 
