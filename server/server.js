@@ -127,7 +127,7 @@ app.get('/api/driver/schedules', verifyToken, async (req, res) => {
         r."route_name",
         (SELECT st."St_name" FROM "Route_stop" rs JOIN "Station" st ON rs."St_code" = st."St_code" WHERE rs."route_code" = s."route_code" ORDER BY rs."seq_no" ASC FETCH FIRST 1 ROWS ONLY) AS "start_station",
         (SELECT st."St_name" FROM "Route_stop" rs JOIN "Station" st ON rs."St_code" = st."St_code" WHERE rs."route_code" = s."route_code" ORDER BY rs."seq_no" DESC FETCH FIRST 1 ROWS ONLY) AS "end_station",
-        b."Bus_name", 
+        b."Bus_plate" AS "bus_plate",
         b."Seats" AS "total_seats",
         (SELECT COUNT(*) FROM "Ticket" t WHERE t."sch_code" = s."Sch_code" AND t."tick_status" IN ('Booked', 'Check-in')) AS "booked_seats"
       FROM "Schedule" s
@@ -219,7 +219,7 @@ app.get('/api/passenger/schedules', verifyToken, async (req, res) => {
           (SELECT rs."St_code" FROM "Route_stop" rs WHERE rs."route_code" = s."route_code" ORDER BY rs."seq_no" ASC FETCH FIRST 1 ROWS ONLY) AS "start_st_code",
           (SELECT st."St_name" FROM "Route_stop" rs JOIN "Station" st ON rs."St_code" = st."St_code" WHERE rs."route_code" = s."route_code" ORDER BY rs."seq_no" ASC FETCH FIRST 1 ROWS ONLY) AS "start_station",
           (SELECT st."St_name" FROM "Route_stop" rs JOIN "Station" st ON rs."St_code" = st."St_code" WHERE rs."route_code" = s."route_code" ORDER BY rs."seq_no" DESC FETCH FIRST 1 ROWS ONLY) AS "end_station",
-          b."Bus_name", 
+          b."Bus_plate" AS "bus_plate",
           b."Seats" AS "total_seats",
           (SELECT COUNT(*) FROM "Ticket" t WHERE t."sch_code" = s."Sch_code" AND t."tick_status" IN ('Booked', 'Check-in')) AS "booked_seats"
         FROM "Schedule" s
@@ -513,19 +513,22 @@ app.get('/api/admin/tickets', verifyToken, async (req, res) => {
 
   try {
     connection = await getDBConnection();
+    // รามิสลบ r."route_name" ออกไปแล้วค่ะ ตัดปัญหาชื่อคอลัมน์ไม่ตรง
     let sql = `
       SELECT 
         t."Ticket_id", t."U_Name", t."seat_no", t."tick_status", t."booking_time",
         s."Sch_code", s."Time" AS "schedule_time",
-        b."Bus_name", r."route_name",
+        b."Bus_plate",
         st1."St_name" AS "boarding_station",
-        st2."St_name" AS "destination_station"
+        st2."St_name" AS "destination_station",
+        m."Sname" || ' ' || m."Lname" AS "driver_name"
       FROM "Ticket" t
       JOIN "Schedule" s ON t."sch_code" = s."Sch_code"
       JOIN "Bus" b ON s."bus" = b."Bus_code"
       JOIN "Route" r ON s."route_code" = r."route_code"
       JOIN "Station" st1 ON t."br_station" = st1."St_code"
       JOIN "Station" st2 ON t."de_station" = st2."St_code"
+      LEFT JOIN "Member" m ON s."driver" = m."U_Name"
       WHERE 1=1
     `;
     const binds = {};
@@ -540,11 +543,13 @@ app.get('/api/admin/tickets', verifyToken, async (req, res) => {
     const result = await connection.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
     res.json({ success: true, data: result.rows });
   } catch (error) {
-    res.status(500).json({ message: 'เกิดข้อผิดพลาดในการดึงข้อมูลตั๋ว' });
+    console.error('🚨 รามิสพบ Error ฐานข้อมูลตั๋ว:', error.message);
+    res.status(500).json({ message: `Oracle Error: ${error.message}` });
   } finally {
     if (connection) { try { await connection.close(); } catch (err) { } }
   }
 });
+
 //counting
 
 app.get('/api/admin/dashboard-stats', async (req, res) => {
@@ -683,13 +688,13 @@ app.get('/api/admin/reports/:report_id', verifyToken, async (req, res) => {
       case '7':
         // Report 7: จำนวนการมอบหมายงานให้รถแต่ละคัน
         baseSql = `
-          SELECT b."Bus_name",
+          SELECT b."Bus_plate",
                  COUNT(s."Sch_code") AS "Total_Rounds"
           FROM "Schedule" s
           JOIN "Bus" b ON s."bus" = b."Bus_code"
           WHERE 1=1
         `;
-        groupBy = ` GROUP BY b."Bus_name"`;
+        groupBy = ` GROUP BY b."Bus_plate"`;
         break;
 
       default:
